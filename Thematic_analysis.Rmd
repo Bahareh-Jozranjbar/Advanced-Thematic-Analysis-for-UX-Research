@@ -1,0 +1,253 @@
+---
+title: "Advanced Thematic Analysis for UX Research "
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### Load Libraries
+```{r libraries}
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+library(topicmodels)
+library(reshape2)
+library(gridExtra)
+library(MASS)
+```
+
+### Sample Transcripts
+```{r transcripts}
+set.seed(123)
+phrases <- c(
+  "The layout is confusing and frustrating.",
+  "Navigation is smooth and intuitive.",
+  "Support was helpful and responsive.",
+  "I love the structure of the course.",
+  "Deadlines make me anxious and stressed.",
+  "The quizzes are fun and rewarding.",
+  "The app crashes too often.",
+  "I feel connected to the instructors.",
+  "Notifications are overwhelming.",
+  "Login process is confusing.",
+  "Interface looks modern and clean.",
+  "Everything is working fine, no issues.",
+  "Lectures are sometimes unclear.",
+  "Course content is enjoyable and helpful.",
+  "App crashes frequently.",
+  "Guidance from staff is appreciated.",
+  "Video playback is smooth.",
+  "The grading system is hard to understand.",
+  "Quizzes are engaging.",
+  "Discussions are helpful."
+)
+
+# Repeat and shuffle
+transcripts <- tibble(
+  ID = paste0("P", 1:100),
+  Feedback = sample(phrases, 100, replace = TRUE)
+)
+```
+
+### Sentiment Analysis Using Emotion Keywords
+```{r sentiment-classifier}
+emotion_keywords <- list(
+  Positive = c("happy", "love", "satisfied", "pleased", "enjoyed", "appreciate", "rewarding", "connected", "relieved", "supported"),
+  Negative = c("frustrated", "angry", "hate", "anxious", "disappointed", "upset", "annoying", "confusing", "stressful", "overwhelming"),
+  Mixed = c("but", "however", "although", "though"),
+  Neutral = c("ok", "fine", "decent", "alright", "neutral")
+)
+
+detect_sentiment <- function(text) {
+  text <- tolower(text)
+  pos <- sum(str_count(text, emotion_keywords$Positive))
+  neg <- sum(str_count(text, emotion_keywords$Negative))
+  mixed <- sum(str_count(text, emotion_keywords$Mixed))
+  neutral <- sum(str_count(text, emotion_keywords$Neutral))
+  
+  if ((pos > 0 & neg > 0) | mixed > 0) return("Mixed")
+  else if (pos > neg) return("Positive")
+  else if (neg > pos) return("Negative")
+  else return("Neutral")
+}
+
+transcripts$Sentiment <- sapply(transcripts$Feedback, detect_sentiment)
+
+sentiment_summary <- transcripts %>% count(Sentiment)
+
+sentiment_plot <- ggplot(sentiment_summary, aes(x = Sentiment, y = n, fill = Sentiment)) +
+  geom_col(width = 0.6) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 16) +
+  labs(title = "Sentiment Distribution in UX Feedback", x = NULL, y = "Count") +
+  theme(legend.position = "none")
+
+ggsave("sentiment_distribution_ux.png", sentiment_plot, width = 7, height = 5, dpi = 300)
+sentiment_plot
+```
+
+### Emotion Word Clouds
+```{r sentiment-wordclouds}
+words <- transcripts %>%
+  unnest_tokens(word, Feedback) %>%
+  filter(!word %in% stop_words$word)
+
+words$Sentiment <- sapply(words$word, function(w) {
+  if (w %in% emotion_keywords$Positive) return("Positive")
+  if (w %in% emotion_keywords$Negative) return("Negative")
+  return(NA)
+})
+
+emotion_words <- words %>% filter(!is.na(Sentiment))
+
+png("sentiment_wordclouds_ux.png", width = 1200, height = 600, res = 150)
+layout(matrix(1:2, nrow = 1))
+par(mar = c(2, 2, 4, 2))
+
+with(subset(emotion_words, Sentiment == "Positive"),
+     wordcloud(words = word, min.freq = 1, max.words = 30,
+               scale = c(3, 0.8), random.order = FALSE,
+               colors = brewer.pal(8, "Greens")))
+mtext("Positive", side = 3, line = 1.5, cex = 1.4, font = 2)
+
+with(subset(emotion_words, Sentiment == "Negative"),
+     wordcloud(words = word, min.freq = 1, max.words = 30,
+               scale = c(3, 0.8), random.order = FALSE,
+               colors = brewer.pal(8, "Reds")))
+mtext("Negative", side = 3, line = 1.5, cex = 1.4, font = 2)
+
+dev.off()
+```
+
+### Co-Occurrence Heatmap of UX Themes
+```{r cooccurrence-heatmap}
+tokens <- transcripts %>%
+  dplyr::select(ID, Feedback) %>%
+  unnest_tokens(word, Feedback) %>%
+  filter(!word %in% stop_words$word)
+
+themes <- c("confusing", "navigation", "support", "bug", "crash", 
+            "helpful", "happy", "frustrated", "layout", "anxious", 
+            "overwhelming", "video", "quiz", "login", "intuitive")
+
+filtered <- tokens %>% filter(word %in% themes)
+
+theme_matrix <- filtered %>%
+  distinct(ID, word) %>%
+  mutate(value = 1) %>%
+  pivot_wider(names_from = word, values_from = value, values_fill = 0)
+
+mat <- as.matrix(theme_matrix[,-1])
+co_occur <- t(mat) %*% mat
+n_comments <- nrow(mat)
+
+co_occur[upper.tri(co_occur)] <- NA
+co_df <- melt(co_occur, na.rm = TRUE)
+colnames(co_df) <- c("Theme1", "Theme2", "Count")
+
+heatmap_plot <- ggplot(co_df, aes(x = Theme1, y = Theme2, fill = Count)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Count), color = "white", size = 4, fontface = "bold") +
+  scale_fill_gradient(low = "#e0ecf4", high = "#54278f", name = "Co-occurrence Count") +
+  coord_fixed() +
+  labs(title = "Theme Co-Occurrence Matrix (Simulated UX Feedback)", x = NULL, y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        legend.position = "right",
+        panel.grid = element_blank())
+
+ggsave("theme_cooccurrence_simulated.png", heatmap_plot, width = 9, height = 7, dpi = 300)
+heatmap_plot
+```
+
+### MDS Visualization of Transcript Similarity
+```{r mds-plot}
+corpus <- VCorpus(VectorSource(transcripts$Feedback)) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, c(stopwords("en"), "just", "really", "get", "like", "also")) %>%
+  tm_map(stripWhitespace)
+
+dtm <- DocumentTermMatrix(corpus)
+row_totals <- apply(dtm, 1, sum)
+dtm <- dtm[row_totals > 0, ]
+
+dist_matrix <- dist(as.matrix(dtm), method = "euclidean")
+mds_result <- cmdscale(dist_matrix, k = 2)
+mds_df <- as.data.frame(mds_result)
+mds_df$Participant <- transcripts$ID[row_totals > 0]
+
+set.seed(123)
+mds_df$V1 <- jitter(mds_df$V1, amount = 0.05)
+mds_df$V2 <- jitter(mds_df$V2, amount = 0.05)
+
+mds_plot <- ggplot(mds_df, aes(x = V1, y = V2, label = Participant)) +
+  geom_point(color = "#1f77b4", size = 3) +
+  geom_text(vjust = -0.6, size = 4) +
+  labs(title = "User Feedback Similarity Map",
+       subtitle = "Multidimensional Scaling (MDS) of transcript similarity",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", size = 16),
+        plot.subtitle = element_text(size = 12),
+        panel.grid = element_line(color = "#e0e0e0"))
+
+ggsave("mds_feedback_similarity_v2.png", mds_plot, width = 7, height = 5, dpi = 300)
+mds_plot
+```
+
+### Topic Modeling (LDA) with Improved Cleaning
+```{r topic-modeling}
+# Custom stopwords
+custom_stopwords <- c(stopwords("en"), "make", "feel", "get", "like", "just", "thing", "also")
+
+# Clean text
+corpus <- VCorpus(VectorSource(transcripts$Feedback)) %>%
+  tm_map(content_transformer(tolower)) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removeWords, custom_stopwords) %>%
+  tm_map(stripWhitespace)
+
+# Create DTM
+dtm <- DocumentTermMatrix(corpus)
+row_totals <- apply(dtm, 1, sum)
+dtm <- dtm[row_totals > 0, ]
+
+# Fit LDA model
+lda_model <- LDA(dtm, k = 4, control = list(seed = 1234))
+top_terms <- tidy(lda_model, matrix = "beta")
+
+# Select top terms per topic
+top_terms_plot <- top_terms %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  mutate(term = reorder_within(term, beta, topic))
+
+lda_plot <- ggplot(top_terms_plot, aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +
+  labs(
+    title = "Topics Discovered via LDA",
+    x = "Importance (Beta)",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave("lda_topic_plot_better.png", lda_plot, width = 10, height = 6, dpi = 300)
+lda_plot
+```
+
